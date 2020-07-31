@@ -21,10 +21,10 @@ import qualified Shelley.Spec.Ledger.TxData as Shelley
 
 
 data ShelleyGovernanceError
-  = GovernanceReadFileError !(FileError TextEnvelopeError)
-  | GovernanceWriteFileError !(FileError ())
-  | GovernanceEmptyUpdateProposalError
-  | GovernanceMIRCertificateKeyRewardMistmach
+  = TextEnvReadError !(FileError TextEnvelopeError)
+  | TextEnvWriteError !(FileError ())
+  | EmptyUpdateProposalError
+  | MIRCertificateKeyRewardMistmach
       !FilePath
       !Int
       -- ^ Number of stake verification keys
@@ -35,12 +35,12 @@ data ShelleyGovernanceError
 renderShelleyGovernanceError :: ShelleyGovernanceError -> Text
 renderShelleyGovernanceError err =
   case err of
-    GovernanceReadFileError fileErr -> Text.pack (displayError fileErr)
-    GovernanceWriteFileError fileErr -> Text.pack (displayError fileErr)
+    TextEnvReadError fileErr -> Text.pack (displayError fileErr)
+    TextEnvWriteError fileErr -> Text.pack (displayError fileErr)
     -- TODO: The equality check is still not working for empty update proposals.
-    GovernanceEmptyUpdateProposalError ->
+    EmptyUpdateProposalError ->
       "Empty update proposals are not allowed"
-    GovernanceMIRCertificateKeyRewardMistmach fp numVKeys numRwdAmts ->
+    MIRCertificateKeyRewardMistmach fp numVKeys numRwdAmts ->
        "Error creating the MIR certificate at: " <> textShow fp
        <> " The number of staking keys: " <> textShow numVKeys
        <> " and the number of reward amounts: " <> textShow numRwdAmts
@@ -67,7 +67,7 @@ runGovernanceMIRCertificate mirPot vKeys rwdAmts (OutputFile oFp) = do
 
     let mirCert = makeMIRCertificate mirPot (zip sCreds rwdAmts)
 
-    firstExceptT GovernanceWriteFileError
+    firstExceptT TextEnvWriteError
       . newExceptT
       $ writeFileTextEnvelope oFp (Just mirCertDesc) mirCert
   where
@@ -79,11 +79,11 @@ runGovernanceMIRCertificate mirPot vKeys rwdAmts (OutputFile oFp) = do
        let numVKeys = length keys
            numRwdAmts = length rwds
        if numVKeys == numRwdAmts
-       then return () else left $ GovernanceMIRCertificateKeyRewardMistmach oFp numVKeys numRwdAmts
+       then return () else left $ MIRCertificateKeyRewardMistmach oFp numVKeys numRwdAmts
 
     readStakeKeyToCred :: VerificationKeyFile -> ExceptT ShelleyGovernanceError IO StakeCredential
     readStakeKeyToCred (VerificationKeyFile stVKey) = do
-      stakeVkey <- firstExceptT GovernanceReadFileError
+      stakeVkey <- firstExceptT TextEnvReadError
         . newExceptT
         $ readFileTextEnvelope (AsVerificationKey AsStakeKey) stVKey
       right . StakeCredentialByKey $ verificationKeyHash stakeVkey
@@ -96,14 +96,14 @@ runGovernanceUpdateProposal
   -> ProtocolParametersUpdate
   -> ExceptT ShelleyGovernanceError IO ()
 runGovernanceUpdateProposal (OutputFile upFile) eNo genVerKeyFiles upPprams = do
-    when (upPprams == mempty) $ left GovernanceEmptyUpdateProposalError
+    when (upPprams == mempty) $ left EmptyUpdateProposalError
     genVKeys <- sequence
-                  [ firstExceptT GovernanceReadFileError . newExceptT $
+                  [ firstExceptT TextEnvReadError . newExceptT $
                       readFileTextEnvelope
                         (AsVerificationKey AsGenesisKey)
                         vkeyFile
                   | VerificationKeyFile vkeyFile <- genVerKeyFiles ]
     let genKeyHashes = map verificationKeyHash genVKeys
         upProp = makeShelleyUpdateProposal upPprams genKeyHashes eNo
-    firstExceptT GovernanceWriteFileError . newExceptT $
+    firstExceptT TextEnvWriteError . newExceptT $
       writeFileTextEnvelope upFile Nothing upProp

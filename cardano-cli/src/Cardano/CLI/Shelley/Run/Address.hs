@@ -24,18 +24,18 @@ import           Cardano.CLI.Shelley.Run.Address.Info (ShelleyAddressInfoError, 
 import           Cardano.CLI.Types
 
 data ShelleyAddressCmdError
-  = ShelleyAddressCmdAddressInfoError !ShelleyAddressInfoError
-  | ShelleyAddressCmdReadFileError !(FileError TextEnvelopeError)
-  | ShelleyAddressCmdWriteFileError !(FileError ())
+  = AddressInfoError !ShelleyAddressInfoError
+  | ReadFileError !(FileError TextEnvelopeError)
+  | WriteFileError !(FileError ())
   deriving Show
 
 renderShelleyAddressCmdError :: ShelleyAddressCmdError -> Text
 renderShelleyAddressCmdError err =
   case err of
-    ShelleyAddressCmdAddressInfoError addrInfoErr ->
+    AddressInfoError addrInfoErr ->
       Text.pack (displayError addrInfoErr)
-    ShelleyAddressCmdReadFileError fileErr -> Text.pack (displayError fileErr)
-    ShelleyAddressCmdWriteFileError fileErr -> Text.pack (displayError fileErr)
+    ReadFileError fileErr -> Text.pack (displayError fileErr)
+    WriteFileError fileErr -> Text.pack (displayError fileErr)
 
 runAddressCmd :: AddressCmd -> ExceptT ShelleyAddressCmdError IO ()
 runAddressCmd cmd =
@@ -44,7 +44,7 @@ runAddressCmd cmd =
     AddressKeyHash vkf mOFp -> runAddressKeyHash vkf mOFp
     AddressBuild payVk stkVk nw mOutFp -> runAddressBuild payVk stkVk nw mOutFp
     AddressBuildMultiSig {} -> runAddressBuildMultiSig
-    AddressInfo txt mOFp -> firstExceptT ShelleyAddressCmdAddressInfoError $ runAddressInfo txt mOFp
+    AddressInfo txt mOFp -> firstExceptT AddressInfoError $ runAddressInfo txt mOFp
 
 
 runAddressKeyGen :: AddressKeyType
@@ -60,10 +60,10 @@ runAddressKeyGen kt (VerificationKeyFile vkeyPath) (SigningKeyFile skeyPath) =
     generateAndWriteKeyFiles asType = do
       skey <- liftIO $ generateSigningKey asType
       let vkey = getVerificationKey skey
-      firstExceptT ShelleyAddressCmdWriteFileError
+      firstExceptT WriteFileError
         . newExceptT
         $ writeFileTextEnvelope skeyPath (Just skeyDesc) skey
-      firstExceptT ShelleyAddressCmdWriteFileError
+      firstExceptT WriteFileError
         . newExceptT
         $ writeFileTextEnvelope vkeyPath (Just vkeyDesc) vkey
 
@@ -76,7 +76,7 @@ runAddressKeyHash :: VerificationKeyFile
                   -> Maybe OutputFile
                   -> ExceptT ShelleyAddressCmdError IO ()
 runAddressKeyHash vkeyPath mOutputFp = do
-  vkey <- firstExceptT ShelleyAddressCmdReadFileError $
+  vkey <- firstExceptT ReadFileError $
             readAddressVerificationKeyFile vkeyPath
 
   let hexKeyHash = foldSomeAddressVerificationKey
@@ -93,7 +93,7 @@ runAddressBuild :: VerificationKeyFile
                 -> Maybe OutputFile
                 -> ExceptT ShelleyAddressCmdError IO ()
 runAddressBuild payVkeyFp mstkVkeyFp nw mOutFp = do
-    payVKey <- firstExceptT ShelleyAddressCmdReadFileError $
+    payVKey <- firstExceptT ReadFileError $
                  readAddressVerificationKeyFile payVkeyFp
 
     addr <- case payVKey of
@@ -121,7 +121,7 @@ runAddressBuild payVkeyFp mstkVkeyFp nw mOutFp = do
         case mstkVkeyFp of
           Nothing -> pure Nothing
           Just (VerificationKeyFile stkVkeyFp) ->
-            firstExceptT ShelleyAddressCmdReadFileError $
+            firstExceptT ReadFileError $
               fmap Just $ newExceptT $
                 readFileTextEnvelope (AsVerificationKey AsStakeKey) stkVkeyFp
 

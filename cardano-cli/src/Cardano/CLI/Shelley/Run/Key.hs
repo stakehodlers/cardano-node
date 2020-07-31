@@ -35,31 +35,31 @@ import           Cardano.CLI.Byron.Key (CardanoEra (..))
 import qualified Cardano.CLI.Byron.Key as Byron
 import           Cardano.CLI.Helpers (textShow)
 import           Cardano.CLI.Shelley.Commands
-import           Cardano.CLI.Types (SigningKeyFile (..), VerificationKeyFile(..))
+import           Cardano.CLI.Types (SigningKeyFile (..), VerificationKeyFile (..))
 
 
 data ShelleyKeyCmdError
-  = ShelleyKeyCmdReadFileError !(FileError TextEnvelopeError)
-  | ShelleyKeyCmdWriteFileError !(FileError ())
-  | ShelleyKeyCmdByronKeyFailure !Byron.ByronKeyFailure
-  | ShelleyKeyCmdByronKeyParseError
+  = ReadFileError !(FileError TextEnvelopeError)
+  | WriteFileError !(FileError ())
+  | ByronKeyFailure !Byron.ByronKeyFailure
+  | ByronKeyParseError
       !Text
       -- ^ Text representation of the parse error. Unfortunately, the actual
       -- error type isn't exported.
-  | ShelleyKeyCmdItnKeyConvError !ConversionError
-  | ShelleyKeyCmdWrongKeyTypeError
+  | ItnKeyConvError !ConversionError
+  | WrongKeyTypeError
   deriving Show
 
 renderShelleyKeyCmdError :: ShelleyKeyCmdError -> Text
 renderShelleyKeyCmdError err =
   case err of
-    ShelleyKeyCmdReadFileError fileErr -> Text.pack (displayError fileErr)
-    ShelleyKeyCmdWriteFileError fileErr -> Text.pack (displayError fileErr)
-    ShelleyKeyCmdByronKeyFailure e -> Byron.renderByronKeyFailure e
-    ShelleyKeyCmdByronKeyParseError errTxt -> errTxt
-    ShelleyKeyCmdItnKeyConvError convErr -> renderConversionError convErr
-    ShelleyKeyCmdWrongKeyTypeError -> Text.pack "Please use a signing key file \
-                                                \when converting ITN BIP32 or Extended keys"
+    ReadFileError fileErr -> Text.pack (displayError fileErr)
+    WriteFileError fileErr -> Text.pack (displayError fileErr)
+    ByronKeyFailure e -> Byron.renderByronKeyFailure e
+    ByronKeyParseError errTxt -> errTxt
+    ItnKeyConvError convErr -> renderConversionError convErr
+    WrongKeyTypeError -> Text.pack "Please use a signing key file \
+                                   \when converting ITN BIP32 or Extended keys"
 
 runKeyCmd :: KeyCmd -> ExceptT ShelleyKeyCmdError IO ()
 runKeyCmd cmd =
@@ -88,11 +88,11 @@ runGetVerificationKey :: SigningKeyFile
                       -> VerificationKeyFile
                       -> ExceptT ShelleyKeyCmdError IO ()
 runGetVerificationKey skf (VerificationKeyFile vkf) = do
-    ssk <- firstExceptT ShelleyKeyCmdReadFileError $
+    ssk <- firstExceptT ReadFileError $
              readSigningKeyFile skf
     withSomeSigningKey ssk $ \sk ->
       let vk = getVerificationKey sk in
-      firstExceptT ShelleyKeyCmdWriteFileError . newExceptT $
+      firstExceptT WriteFileError . newExceptT $
         writeFileTextEnvelope vkf Nothing vk
 
 
@@ -172,10 +172,10 @@ runNonExtendedKey :: VerificationKeyFile
                   -> VerificationKeyFile
                   -> ExceptT ShelleyKeyCmdError IO ()
 runNonExtendedKey evkf (VerificationKeyFile vkf) = do
-    evk <- firstExceptT ShelleyKeyCmdReadFileError $
+    evk <- firstExceptT ReadFileError $
              readExtendedVerificationKeyFile evkf
     withNonExtendedKey evk $ \vk ->
-      firstExceptT ShelleyKeyCmdWriteFileError . newExceptT $
+      firstExceptT WriteFileError . newExceptT $
         writeFileTextEnvelope vkf Nothing vk
 
 withNonExtendedKey :: SomeExtendedVerificationKey
@@ -298,13 +298,13 @@ convertByronSigningKey byronFormat convert
                        skeyPathOld
                        (OutputFile skeyPathNew) = do
 
-    sk <- firstExceptT ShelleyKeyCmdByronKeyFailure $
+    sk <- firstExceptT ByronKeyFailure $
             Byron.readEraSigningKey (toCarandoEra byronFormat) skeyPathOld
 
     let sk' :: SigningKey keyrole
         sk' = convert sk
 
-    firstExceptT ShelleyKeyCmdWriteFileError . newExceptT $
+    firstExceptT WriteFileError . newExceptT $
       writeFileTextEnvelope skeyPathNew Nothing sk'
 
   where
@@ -325,13 +325,13 @@ convertByronVerificationKey convert
                             (VerificationKeyFile vkeyPathOld)
                             (OutputFile vkeyPathNew) = do
 
-    vk <- firstExceptT ShelleyKeyCmdByronKeyFailure $
+    vk <- firstExceptT ByronKeyFailure $
             Byron.readPaymentVerificationKey (Byron.VerificationKeyFile vkeyPathOld)
 
     let vk' :: VerificationKey keyrole
         vk' = convert vk
 
-    firstExceptT ShelleyKeyCmdWriteFileError . newExceptT $
+    firstExceptT WriteFileError . newExceptT $
       writeFileTextEnvelope vkeyPathNew Nothing vk'
 
 
@@ -342,7 +342,7 @@ runConvertByronGenesisVerificationKey
 runConvertByronGenesisVerificationKey (VerificationKeyBase64 b64ByronVKey)
                                       (OutputFile vkeyPathNew) = do
 
-    vk <- firstExceptT (ShelleyKeyCmdByronKeyParseError . show)
+    vk <- firstExceptT (ByronKeyParseError . show)
         . hoistEither
         . Byron.Crypto.parseFullVerificationKey
         . Text.pack
@@ -351,7 +351,7 @@ runConvertByronGenesisVerificationKey (VerificationKeyBase64 b64ByronVKey)
     let vk' :: VerificationKey GenesisKey
         vk' = convert vk
 
-    firstExceptT ShelleyKeyCmdWriteFileError . newExceptT $
+    firstExceptT WriteFileError . newExceptT $
       writeFileTextEnvelope vkeyPathNew Nothing vk'
   where
     convert :: Byron.VerificationKey -> VerificationKey GenesisKey
@@ -368,39 +368,39 @@ runConvertITNStakeKey
   -> OutputFile
   -> ExceptT ShelleyKeyCmdError IO ()
 runConvertITNStakeKey (AVerificationKeyFile (VerificationKeyFile vk)) (OutputFile outFile) = do
-  bech32publicKey <- firstExceptT ShelleyKeyCmdItnKeyConvError . newExceptT $
+  bech32publicKey <- firstExceptT ItnKeyConvError . newExceptT $
                      readFileITNKey vk
   vkey <- hoistEither
-    . first ShelleyKeyCmdItnKeyConvError
+    . first ItnKeyConvError
     $ convertITNVerificationKey bech32publicKey
-  firstExceptT ShelleyKeyCmdWriteFileError . newExceptT $
+  firstExceptT WriteFileError . newExceptT $
     writeFileTextEnvelope outFile Nothing vkey
 
 runConvertITNStakeKey (ASigningKeyFile (SigningKeyFile sk)) (OutputFile outFile) = do
-  bech32privateKey <- firstExceptT ShelleyKeyCmdItnKeyConvError . newExceptT $
+  bech32privateKey <- firstExceptT ItnKeyConvError . newExceptT $
                       readFileITNKey sk
   skey <- hoistEither
-    . first ShelleyKeyCmdItnKeyConvError
+    . first ItnKeyConvError
     $ convertITNSigningKey bech32privateKey
-  firstExceptT ShelleyKeyCmdWriteFileError . newExceptT $
+  firstExceptT WriteFileError . newExceptT $
     writeFileTextEnvelope outFile Nothing skey
 
 runConvertITNExtendedToStakeKey :: SomeKeyFile -> OutputFile -> ExceptT ShelleyKeyCmdError IO ()
-runConvertITNExtendedToStakeKey (AVerificationKeyFile _) _ = left ShelleyKeyCmdWrongKeyTypeError
+runConvertITNExtendedToStakeKey (AVerificationKeyFile _) _ = left WrongKeyTypeError
 runConvertITNExtendedToStakeKey (ASigningKeyFile (SigningKeyFile sk)) (OutputFile outFile) = do
-  bech32privateKey <- firstExceptT ShelleyKeyCmdItnKeyConvError . newExceptT $ readFileITNKey sk
-  skey <- hoistEither . first ShelleyKeyCmdItnKeyConvError
+  bech32privateKey <- firstExceptT ItnKeyConvError . newExceptT $ readFileITNKey sk
+  skey <- hoistEither . first ItnKeyConvError
             $ convertITNExtendedSigningKey bech32privateKey
-  firstExceptT ShelleyKeyCmdWriteFileError . newExceptT
+  firstExceptT WriteFileError . newExceptT
     $ writeFileTextEnvelope outFile Nothing skey
 
 runConvertITNBip32ToStakeKey :: SomeKeyFile -> OutputFile -> ExceptT ShelleyKeyCmdError IO ()
-runConvertITNBip32ToStakeKey (AVerificationKeyFile _) _ = left ShelleyKeyCmdWrongKeyTypeError
+runConvertITNBip32ToStakeKey (AVerificationKeyFile _) _ = left WrongKeyTypeError
 runConvertITNBip32ToStakeKey (ASigningKeyFile (SigningKeyFile sk)) (OutputFile outFile) = do
-  bech32privateKey <- firstExceptT ShelleyKeyCmdItnKeyConvError . newExceptT $ readFileITNKey sk
-  skey <- hoistEither . first ShelleyKeyCmdItnKeyConvError
+  bech32privateKey <- firstExceptT ItnKeyConvError . newExceptT $ readFileITNKey sk
+  skey <- hoistEither . first ItnKeyConvError
             $ convertITNBIP32SigningKey bech32privateKey
-  firstExceptT ShelleyKeyCmdWriteFileError . newExceptT
+  firstExceptT WriteFileError . newExceptT
     $ writeFileTextEnvelope outFile Nothing skey
 
 data ConversionError

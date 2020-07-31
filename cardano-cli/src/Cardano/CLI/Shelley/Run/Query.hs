@@ -79,32 +79,19 @@ import           Ouroboros.Network.Protocol.LocalStateQuery.Type as LocalStateQu
 
 
 data ShelleyQueryCmdError
-  = ShelleyQueryEnvVarSocketErr !EnvSocketError
-  | ShelleyQueryNodeLocalStateQueryError !LocalStateQueryError
-  | ShelleyQueryWriteProtocolParamsError !FilePath !IOException
-  | ShelleyQueryWriteFilteredUTxOsError !FilePath !IOException
-  | ShelleyQueryWriteStakeDistributionError !FilePath !IOException
-  | ShelleyQueryWriteLedgerStateError !FilePath !IOException
-  | ShelleyQueryWriteStakeAddressInfoError !FilePath !IOException
-  | ShelleyHelpersError !HelpersError
+  = EnvVarSocketErr !EnvSocketError
+  | LocalStateQueryError !LocalStateQueryError
+  | WriteFileError !(FileError ())
+  | HelpersError !HelpersError
   deriving Show
 
 renderShelleyQueryCmdError :: ShelleyQueryCmdError -> Text
 renderShelleyQueryCmdError err =
   case err of
-    ShelleyQueryEnvVarSocketErr envSockErr -> renderEnvSocketError envSockErr
-    ShelleyQueryNodeLocalStateQueryError lsqErr -> renderLocalStateQueryError lsqErr
-    ShelleyQueryWriteProtocolParamsError fp ioException ->
-      "Error writing protocol parameters at: " <> show fp <> " Error: " <> show ioException
-    ShelleyQueryWriteFilteredUTxOsError fp ioException ->
-      "Error writing filtered UTxOs at: " <> show fp <> " Error: " <> show ioException
-    ShelleyQueryWriteStakeDistributionError fp ioException ->
-      "Error writing stake distribution at: " <> show fp <> " Error: " <> show ioException
-    ShelleyQueryWriteLedgerStateError fp ioException ->
-      "Error writing ledger state at: " <> show fp <> " Error: " <> show ioException
-    ShelleyQueryWriteStakeAddressInfoError fp ioException ->
-      "Error writing stake address info at: " <> show fp <> " Error: " <> show ioException
-    ShelleyHelpersError helpersErr -> renderHelpersError helpersErr
+    EnvVarSocketErr envSockErr -> renderEnvSocketError envSockErr
+    LocalStateQueryError lsqErr -> renderLocalStateQueryError lsqErr
+    WriteFileError fileErr -> Text.pack (displayError fileErr)
+    HelpersError helpersErr -> renderHelpersError helpersErr
 
 runQueryCmd :: QueryCmd -> ExceptT ShelleyQueryCmdError IO ()
 runQueryCmd cmd =
@@ -129,9 +116,9 @@ runQueryProtocolParameters
   -> Maybe OutputFile
   -> ExceptT ShelleyQueryCmdError IO ()
 runQueryProtocolParameters protocol network mOutFile = do
-    SocketPath sockPath <- firstExceptT ShelleyQueryEnvVarSocketErr
+    SocketPath sockPath <- firstExceptT EnvVarSocketErr
                            readEnvSocketPath
-    pparams <- firstExceptT ShelleyQueryNodeLocalStateQueryError $
+    pparams <- firstExceptT LocalStateQueryError $
                withlocalNodeConnectInfo protocol network sockPath $
                  queryPParamsFromLocalState
     writeProtocolParameters mOutFile pparams
@@ -141,7 +128,7 @@ writeProtocolParameters mOutFile pparams =
   case mOutFile of
     Nothing -> liftIO $ LBS.putStrLn (encodePretty pparams)
     Just (OutputFile fpath) ->
-      handleIOExceptT (ShelleyQueryWriteProtocolParamsError fpath) $
+      handleIOExceptT (WriteFileError . FileIOError fpath) $
         LBS.writeFile fpath (encodePretty pparams)
 
 runQueryTip
@@ -150,9 +137,9 @@ runQueryTip
   -> Maybe OutputFile
   -> ExceptT ShelleyQueryCmdError IO ()
 runQueryTip protocol network mOutFile = do
-    SocketPath sockPath <- firstExceptT ShelleyQueryEnvVarSocketErr readEnvSocketPath
+    SocketPath sockPath <- firstExceptT EnvVarSocketErr readEnvSocketPath
     output <-
-      firstExceptT ShelleyQueryNodeLocalStateQueryError $
+      firstExceptT LocalStateQueryError $
       withlocalNodeConnectInfo protocol network sockPath $ \connectInfo -> do
         tip <- liftIO $ getLocalTip connectInfo
         let output = case localNodeConsensusMode connectInfo of
@@ -172,8 +159,8 @@ runQueryUTxO
   -> Maybe OutputFile
   -> ExceptT ShelleyQueryCmdError IO ()
 runQueryUTxO protocol qfilter network mOutFile = do
-  SocketPath sockPath <- firstExceptT ShelleyQueryEnvVarSocketErr readEnvSocketPath
-  filteredUtxo <- firstExceptT ShelleyQueryNodeLocalStateQueryError $
+  SocketPath sockPath <- firstExceptT EnvVarSocketErr readEnvSocketPath
+  filteredUtxo <- firstExceptT LocalStateQueryError $
     withlocalNodeConnectInfo protocol network sockPath (queryUTxOFromLocalState qfilter)
   writeFilteredUTxOs mOutFile filteredUtxo
 
@@ -183,14 +170,14 @@ runQueryLedgerState
   -> Maybe OutputFile
   -> ExceptT ShelleyQueryCmdError IO ()
 runQueryLedgerState protocol network mOutFile = do
-  SocketPath sockPath <- firstExceptT ShelleyQueryEnvVarSocketErr readEnvSocketPath
-  els <- firstExceptT ShelleyQueryNodeLocalStateQueryError $
+  SocketPath sockPath <- firstExceptT EnvVarSocketErr readEnvSocketPath
+  els <- firstExceptT LocalStateQueryError $
     withlocalNodeConnectInfo protocol network sockPath queryLocalLedgerState
   case els of
     Right lstate -> writeLedgerState mOutFile lstate
     Left lbs -> do
       liftIO $ putTextLn "Version mismatch between node and consensus, so dumping this as generic CBOR."
-      firstExceptT ShelleyHelpersError $ pPrintCBOR lbs
+      firstExceptT HelpersError $ pPrintCBOR lbs
 
 runQueryStakeAddressInfo
   :: Protocol
@@ -199,8 +186,8 @@ runQueryStakeAddressInfo
   -> Maybe OutputFile
   -> ExceptT ShelleyQueryCmdError IO ()
 runQueryStakeAddressInfo protocol addr network mOutFile = do
-    SocketPath sockPath <- firstExceptT ShelleyQueryEnvVarSocketErr readEnvSocketPath
-    delegsAndRwds <- firstExceptT ShelleyQueryNodeLocalStateQueryError $
+    SocketPath sockPath <- firstExceptT EnvVarSocketErr readEnvSocketPath
+    delegsAndRwds <- firstExceptT LocalStateQueryError $
       withlocalNodeConnectInfo
         protocol
         network
@@ -237,7 +224,7 @@ writeStakeAddressInfo mOutFile dr@(DelegationsAndRewards _ _delegsAndRwds) =
   case mOutFile of
     Nothing -> liftIO $ LBS.putStrLn (encodePretty dr)
     Just (OutputFile fpath) ->
-      handleIOExceptT (ShelleyQueryWriteStakeAddressInfoError fpath)
+      handleIOExceptT (WriteFileError . FileIOError fpath)
         $ LBS.writeFile fpath (encodePretty dr)
 
 writeLedgerState :: Maybe OutputFile -> EpochState TPraosStandardCrypto -> ExceptT ShelleyQueryCmdError IO ()
@@ -245,7 +232,7 @@ writeLedgerState mOutFile lstate =
   case mOutFile of
     Nothing -> liftIO $ LBS.putStrLn (encodePretty lstate)
     Just (OutputFile fpath) ->
-      handleIOExceptT (ShelleyQueryWriteLedgerStateError fpath)
+      handleIOExceptT (WriteFileError . FileIOError fpath)
         $ LBS.writeFile fpath (encodePretty lstate)
 
 writeFilteredUTxOs :: Maybe OutputFile -> Ledger.UTxO TPraosStandardCrypto -> ExceptT ShelleyQueryCmdError IO ()
@@ -253,7 +240,7 @@ writeFilteredUTxOs mOutFile utxo =
     case mOutFile of
       Nothing -> liftIO $ printFilteredUTxOs utxo
       Just (OutputFile fpath) ->
-        handleIOExceptT (ShelleyQueryWriteFilteredUTxOsError fpath) $ LBS.writeFile fpath (encodePretty utxo)
+        handleIOExceptT (WriteFileError . FileIOError fpath) $ LBS.writeFile fpath (encodePretty utxo)
 
 printFilteredUTxOs :: Ledger.UTxO TPraosStandardCrypto -> IO ()
 printFilteredUTxOs (Ledger.UTxO utxo) = do
@@ -286,8 +273,8 @@ runQueryStakeDistribution
   -> Maybe OutputFile
   -> ExceptT ShelleyQueryCmdError IO ()
 runQueryStakeDistribution protocol network mOutFile = do
-  SocketPath sockPath <- firstExceptT ShelleyQueryEnvVarSocketErr readEnvSocketPath
-  stakeDist <- firstExceptT ShelleyQueryNodeLocalStateQueryError $
+  SocketPath sockPath <- firstExceptT EnvVarSocketErr readEnvSocketPath
+  stakeDist <- firstExceptT LocalStateQueryError $
       withlocalNodeConnectInfo
         protocol
         network
@@ -299,7 +286,7 @@ writeStakeDistribution :: Maybe OutputFile
                        -> PoolDistr TPraosStandardCrypto
                        -> ExceptT ShelleyQueryCmdError IO ()
 writeStakeDistribution (Just (OutputFile outFile)) (PoolDistr stakeDist) =
-    handleIOExceptT (ShelleyQueryWriteStakeDistributionError outFile) $
+    handleIOExceptT (WriteFileError . FileIOError outFile) $
       LBS.writeFile outFile (encodePretty stakeDist)
 
 writeStakeDistribution Nothing stakeDist =
