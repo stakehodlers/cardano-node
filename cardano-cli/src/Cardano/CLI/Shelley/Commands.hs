@@ -76,6 +76,7 @@ data AddressCmd
   | AddressKeyHash VerificationKeyFile (Maybe OutputFile)
   | AddressBuild VerificationKeyFile (Maybe VerificationKeyFile) NetworkId (Maybe OutputFile)
   | AddressBuildMultiSig  --TODO
+  | AddressBuildScript ScriptFile NetworkId (Maybe OutputFile)
   | AddressInfo Text (Maybe OutputFile)
   deriving (Eq, Show)
 
@@ -91,7 +92,7 @@ data StakeAddressCmd
 data KeyCmd
   = KeyGetVerificationKey SigningKeyFile VerificationKeyFile
   | KeyNonExtendedKey  VerificationKeyFile VerificationKeyFile
-  | KeyConvertByronKey ByronKeyType SomeKeyFile OutputFile
+  | KeyConvertByronKey (Maybe Text) ByronKeyType SomeKeyFile OutputFile
   | KeyConvertByronGenesisVKey VerificationKeyBase64 OutputFile
   | KeyConvertITNStakeKey SomeKeyFile OutputFile
   | KeyConvertITNExtendedToStakeKey SomeKeyFile OutputFile
@@ -163,7 +164,7 @@ data PoolCmd
       EpochNo
       -- ^ Epoch in which to retire the stake pool. --TODO: Double check this
       OutputFile
-  | PoolGetId VerificationKeyFile
+  | PoolGetId VerificationKeyFile OutputFormat
   | PoolMetaDataHash PoolMetaDataFile (Maybe OutputFile)
   deriving (Eq, Show)
 

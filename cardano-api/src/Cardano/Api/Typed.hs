@@ -1,20 +1,18 @@
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DefaultSignatures #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeFamilies #-}
-
-{-# LANGUAGE DefaultSignatures #-}
-{-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE DerivingVia #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeFamilies #-}
 
 -- The Shelley ledger uses promoted data kinds which we have to use, but we do
 -- not export any from this API. We also use them unticked as nature intended.
@@ -37,7 +35,6 @@ module Cardano.Api.Typed (
     Shelley,
     HasTypeProxy(..),
     AsType(..),
-
     -- * Cryptographic key interface
     -- $keys
     Key,
@@ -156,12 +153,16 @@ module Cardano.Api.Typed (
     -- * Scripts
     -- | Both 'PaymentCredential's and 'StakeCredential's can use scripts.
     -- Shelley supports multi-signatures via scripts.
+    Script,
 
     -- ** Script addresses
     -- | Making addresses from scripts.
+    scriptHash,
 
-    -- ** Multi-sig scripts
+    -- ** Multi-signature scripts
     -- | Making multi-signature scripts.
+    MultiSigScript(..),
+    makeMultiSigScript,
 
     -- * Serialisation
     -- | Support for serialising data in JSON, CBOR and text files.
@@ -303,24 +304,23 @@ module Cardano.Api.Typed (
     toShelleyNetwork,
   ) where
 
-
 import           Prelude
 
 import           Data.Aeson.Encode.Pretty (encodePretty')
 import           Data.Bifunctor (first)
+import qualified Data.HashMap.Strict as HMS
 import           Data.Kind (Constraint)
 import           Data.List as List
 import qualified Data.List.NonEmpty as NonEmpty
 import           Data.Maybe
 import           Data.Proxy (Proxy (..))
-import           Data.Typeable (Typeable)
-import           Data.Void (Void)
-import           Data.Word
---import           Data.Either
 import           Data.String (IsString (fromString))
 import           Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
+import           Data.Typeable (Typeable)
+import           Data.Void (Void)
+import           Data.Word
 import           Numeric.Natural
 
 import           Data.IP (IPv4, IPv6)
@@ -340,6 +340,7 @@ import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Sequence.Strict as Seq
 import qualified Data.Set as Set
+import           Data.Vector (Vector)
 import qualified Data.Vector as Vector
 
 import qualified Codec.Binary.Bech32 as Bech32
@@ -353,10 +354,9 @@ import           Control.Monad.Trans.Except (ExceptT (..))
 import           Control.Monad.Trans.Except.Extra
 import           Control.Tracer (nullTracer)
 
-import           Data.Aeson (FromJSON (..), ToJSON (..), (.:))
+import           Data.Aeson (FromJSON (..), ToJSON (..), Value (..), object, (.:), (.=))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson
-
 
 --
 -- Common types, consensus, network
@@ -461,8 +461,6 @@ import           Ouroboros.Network.Protocol.ChainSync.Client as ChainSync
 import           Ouroboros.Network.Protocol.LocalStateQuery.Client as StateQuery
 import           Ouroboros.Network.Protocol.LocalStateQuery.Type (AcquireFailure)
 import           Ouroboros.Network.Protocol.LocalTxSubmission.Client as TxSubmission
-
-
 
 
 -- ----------------------------------------------------------------------------
@@ -1548,14 +1546,168 @@ estimateTransactionFee nw txFeeFixed txFeePerByte (ShelleyTx tx) =
 -- Scripts
 --
 
-data Script
+newtype Script = Script (Shelley.Script ShelleyCrypto)
+  deriving stock (Eq, Ord, Show)
+  deriving newtype (ToCBOR)
 
 newtype instance Hash Script = ScriptHash (Shelley.ScriptHash ShelleyCrypto)
   deriving (Eq, Ord, Show)
 
+data MultiSigScript = RequireSignature (Hash PaymentKey)
+                    | RequireAllOf [MultiSigScript]
+                    | RequireAnyOf [MultiSigScript]
+                    | RequireMOf Int [MultiSigScript]
+  deriving (Eq, Show)
+
+instance ToJSON MultiSigScript where
+  toJSON (RequireSignature payKeyHash) = String . Text.decodeUtf8 $ serialiseToRawBytesHex $ payKeyHash
+  toJSON (RequireAnyOf reqSigs) = object [ "any" .= map toJSON reqSigs ]
+  toJSON (RequireAllOf reqSigs) = object [ "all" .= map toJSON reqSigs ]
+  toJSON (RequireMOf reqNum reqSigs) = toJSONmOfnChecks reqSigs reqNum (length reqSigs)
+
+toJSONmOfnChecks :: [MultiSigScript] -> Int -> Int -> Value
+toJSONmOfnChecks keys required total
+  | length keys /= total = error $ "The number of payment key hashes submitted \
+                                 \does not equal total. " ++ " total: " ++ show total
+                                 ++ "Number of key hashes: " ++ show (length keys)
+
+  | length keys < required = error $ "required exceeds the number of payment key \
+                                   \hashes. Number of keys: " ++ show (length keys)
+                                   ++ " required: " ++ show required
+
+  | required <= 0 = error "The required number of payment key hashes cannot be less than or equal to 0."
+  | required == 1 = error "required is equal to one, you should use the \"any\" multisig script"
+
+  | required == total = error $ "required is equal to the total, you should use \
+                                \the \"all\" multisig script"
+
+  | length keys == total = object [ "atLeast" .= object
+                                    [ "required" .= required
+                                    , "total" .= total
+                                    , "paymentKeyHashes" .= keys
+                                    ]
+                                  ]
+
+  | otherwise = error $ "Cardano.Api.Typed.toJSONmofnChecks failure occured: " ++ " required: "
+                      ++ show required ++ " total: " ++  show total
+                      ++ " number of key hashes: " ++ show (length keys)
+
+instance FromJSON MultiSigScript where
+  parseJSON = Aeson.withObject "MultiSigScript" $ \obj ->
+   select [all' obj, any' obj, mofn (Object obj)]
+
+select :: [ParseMultiSigScript] -> Aeson.Parser MultiSigScript
+select [] = fail "No multisig scripts found"
+select (x : xs) = case x of
+                    All mss -> mss
+                    Any mss -> mss
+                    MofN mss  -> mss
+                    ScriptNotFound -> select xs
+
+data ParseMultiSigScript = All (Aeson.Parser MultiSigScript)
+                         | Any (Aeson.Parser MultiSigScript)
+                         | MofN (Aeson.Parser MultiSigScript)
+                         | ScriptNotFound
+
+-- Parse "all" multisig objects
+all' :: HMS.HashMap Text Value -> ParseMultiSigScript
+all' obj = case HMS.lookup "all" obj of
+             Just (Array vecAllReqHashes) ->
+               All . return . RequireAllOf $ gatherSignatures vecAllReqHashes
+             _ -> ScriptNotFound
+
+-- Parse "any" multisig objects
+any' :: HMS.HashMap Text Value -> ParseMultiSigScript
+any' obj = case HMS.lookup "any" obj of
+             Just (Array vecAnyReqHashes) ->
+               Any . return . RequireAnyOf $ gatherSignatures vecAnyReqHashes
+             _ -> ScriptNotFound
+
+-- Parse "mofn" multisig objects
+mofn :: Value -> ParseMultiSigScript
+mofn val =
+  MofN $ Aeson.withObject "mofn"
+           (\o -> do mofnObj <- o .: "atLeast"
+                     required <- mofnObj .: "required"
+                     total <- mofnObj .: "total"
+                     keyHashes <- case HMS.lookup "paymentKeyHashes" mofnObj of
+                                    Just (Array keyhashes) -> return $ gatherSignatures keyhashes
+                                    _ -> return []
+                     fromJSONmOfnChecks keyHashes required total)
+           val
+
+
+
+fromJSONmOfnChecks :: [MultiSigScript] -> Int -> Int -> Aeson.Parser MultiSigScript
+fromJSONmOfnChecks keys required total
+  | required <= 0 = error  "The required number of payment key hashes cannot be less than or equal to 0."
+  | required == 1 = fail "required is equal to one, you should use the \"any\" multisig script"
+  | required == total = fail $ "required is equal to the total, you should \
+                               \use the \"all\" multisig script"
+  | length keys < required = fail $ "required exceeds the number of payment key hashes. \
+                                    \Number of keys: " ++ show (length keys)
+                                  ++ " required: " ++ show required
+  | length keys == total = return $ RequireMOf required keys
+  | otherwise = fail $ "Cardano.Api.Typed.fromJSONmOfnChecks failure occured. required: "
+                     ++ show required ++ " total: " ++ show total
+                     ++ " keys: " ++ show keys
+
+gatherSignatures :: Vector Value -> [MultiSigScript]
+gatherSignatures anyList =
+  let mPaymentKeyHashes = Vector.map (fmap RequireSignature . filterValue) anyList
+  in catMaybes $ Vector.toList mPaymentKeyHashes
+ where
+  filterValue :: Value -> Maybe (Hash PaymentKey)
+  filterValue (String hpk) = Just $ convertToHash hpk
+  filterValue _ = Nothing
+
+convertToHash :: Text -> Hash PaymentKey
+convertToHash txt = case deserialiseFromRawBytesHex (AsHash AsPaymentKey) $ Text.encodeUtf8 txt of
+                      Just payKeyHash -> payKeyHash
+                      Nothing -> error $ "Error deserialising payment key hash: " <> Text.unpack txt
+
+
+instance HasTypeProxy Script where
+    data AsType Script = AsScript
+    proxyToAsType _ = AsScript
+
+instance SerialiseAsRawBytes (Hash Script) where
+    serialiseToRawBytes (ScriptHash (Shelley.ScriptHash h)) =
+      Crypto.hashToBytes h
+
+    deserialiseFromRawBytes (AsHash AsScript) bs =
+      ScriptHash . Shelley.ScriptHash <$> Crypto.hashFromBytes bs
+
+instance SerialiseAsCBOR Script where
+    serialiseToCBOR (Script s) =
+      CBOR.serialize' s
+
+    deserialiseFromCBOR AsScript bs =
+      Script <$>
+        CBOR.decodeAnnotator "Script" fromCBOR (LBS.fromStrict bs)
+
+instance HasTextEnvelope Script where
+    textEnvelopeType _ = "Script"
+    textEnvelopeDefaultDescr (Script script) =
+      case script of
+        Shelley.MultiSigScript {} -> "Multi-signature script"
+
+
+scriptHash :: Script -> Hash Script
+scriptHash (Script s) = ScriptHash (Shelley.hashAnyScript s)
+
+makeMultiSigScript :: MultiSigScript -> Script
+makeMultiSigScript = Script . Shelley.MultiSigScript . go
+  where
+    go :: MultiSigScript -> Shelley.MultiSig ShelleyCrypto
+    go (RequireSignature (PaymentKeyHash kh))
+                        = Shelley.RequireSignature (Shelley.coerceKeyRole kh)
+    go (RequireAllOf s) = Shelley.RequireAllOf (map go s)
+    go (RequireAnyOf s) = Shelley.RequireAnyOf (map go s)
+    go (RequireMOf m s) = Shelley.RequireMOf m (map go s)
 
 makeShelleyScriptWitness :: Script -> Witness Shelley
-makeShelleyScriptWitness = undefined
+makeShelleyScriptWitness (Script s) = ShelleyScriptWitness s
 
 
 -- ----------------------------------------------------------------------------
@@ -2148,7 +2300,7 @@ makeShelleyUpdateProposal params genesisKeyHashes epochno =
            (Map.fromList
               [ (kh, ppup) | GenesisKeyHash kh <- genesisKeyHashes ]))
         epochno
-  where
+
 toShelleyPParamsUpdate :: ProtocolParametersUpdate
                        -> Shelley.PParamsUpdate
 toShelleyPParamsUpdate
@@ -4188,8 +4340,12 @@ instance SerialiseAsRawBytes (Hash StakePoolKey) where
     deserialiseFromRawBytes (AsHash AsStakePoolKey) bs =
       StakePoolKeyHash . Shelley.KeyHash <$> Crypto.hashFromBytes bs
 
+instance SerialiseAsBech32 (Hash StakePoolKey) where
+    bech32PrefixFor         _ =  "pool"
+    bech32PrefixesPermitted _ = ["pool"]
+
 instance ToJSON (Hash StakePoolKey) where
-    toJSON = toJSON . Text.decodeLatin1 . serialiseToRawBytesHex
+    toJSON = toJSON . serialiseToBech32
 
 instance HasTextEnvelope (VerificationKey StakePoolKey) where
     textEnvelopeType _ = "StakePoolVerificationKey_"

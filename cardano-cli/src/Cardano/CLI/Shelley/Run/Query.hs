@@ -1,13 +1,10 @@
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE StandaloneDeriving #-}
 
 {-# OPTIONS_GHC -Wno-unticked-promoted-constructors #-}
 
@@ -23,18 +20,16 @@ import           Prelude (String)
 import           Data.Aeson (ToJSON (..), (.=))
 import qualified Data.Aeson as Aeson
 import           Data.Aeson.Encode.Pretty (encodePretty)
-import qualified Data.ByteString.Base16 as B16
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy.Char8 as LBS
-import           Data.HashMap.Strict (HashMap)
-import qualified Data.HashMap.Strict as HMS
-import qualified Data.Map as Map
+import qualified Data.Map.Strict as Map
 import           Data.Set (Set)
 import qualified Data.Set as Set
 import           Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import qualified Data.Text.IO as Text
+import qualified Data.Vector as Vector
 import           Numeric (showEFloat)
 
 import           Control.Monad.Trans.Except (ExceptT)
@@ -63,8 +58,7 @@ import           Ouroboros.Network.Block (Serialised (..), getTipPoint)
 import qualified Shelley.Spec.Ledger.Address as Ledger
 import           Shelley.Spec.Ledger.Coin (Coin (..))
 import qualified Shelley.Spec.Ledger.Credential as Ledger
-import           Shelley.Spec.Ledger.Delegation.Certificates (PoolDistr (..))
-import qualified Shelley.Spec.Ledger.Delegation.Certificates as Ledger (PoolDistr (..))
+import           Shelley.Spec.Ledger.Delegation.Certificates (IndividualPoolStake (..), PoolDistr (..))
 import qualified Shelley.Spec.Ledger.Keys as Ledger
 import           Shelley.Spec.Ledger.LedgerState (EpochState)
 import qualified Shelley.Spec.Ledger.LedgerState as Ledger
@@ -311,7 +305,7 @@ printStakeDistribution (PoolDistr stakeDist) = do
     putStrLn $ replicate (Text.length title + 2) '-'
     sequence_
       [ putStrLn $ showStakeDistr (StakePoolKeyHash poolId) stakeFraction (VrfKeyHash vrfKeyId)
-      | (poolId, (stakeFraction, vrfKeyId)) <- Map.toList stakeDist ]
+      | (poolId, (IndividualPoolStake stakeFraction vrfKeyId)) <- Map.toList stakeDist ]
   where
     title :: Text
     title =
@@ -391,24 +385,21 @@ data DelegationsAndRewards
 
 instance ToJSON DelegationsAndRewards where
   toJSON (DelegationsAndRewards nw delegsAndRwds) =
-      Aeson.Object $
-        Map.foldlWithKey' delegAndRwdToJson HMS.empty delegsAndRwds
+      Aeson.Array . Vector.fromList
+        . map delegAndRwdToJson $ Map.toList delegsAndRwds
     where
       delegAndRwdToJson
-        :: HashMap Text Aeson.Value
-        -> Ledger.Credential Ledger.Staking TPraosStandardCrypto
-        -> (Maybe (Hash StakePoolKey), Coin)
-        -> HashMap Text Aeson.Value
-      delegAndRwdToJson acc k (d, r) =
-        HMS.insert
-          (toKey k)
-          (Aeson.object ["delegation" .= d, "rewardAccountBalance" .= r])
-          acc
+        :: (Ledger.Credential 'Ledger.Staking TPraosStandardCrypto, (Maybe (Hash StakePoolKey), Coin))
+        -> Aeson.Value
+      delegAndRwdToJson (k, (d, r)) =
+        Aeson.object
+          [ "address" .= renderAddress k
+          , "delegation" .= d
+          , "rewardAccountBalance" .= r
+          ]
 
-      toKey = Text.decodeLatin1
-            . B16.encode
-            . Ledger.serialiseRewardAcnt
-            . Ledger.RewardAcnt (toShelleyNetwork nw)
+      renderAddress :: Ledger.Credential Ledger.Staking TPraosStandardCrypto -> Text
+      renderAddress = serialiseAddress . StakeAddress (toShelleyNetwork nw)
 
 
 -- | Query the current protocol parameters from a Shelley node via the local
@@ -454,7 +445,7 @@ queryPParamsFromLocalState connectInfo@LocalNodeConnectInfo{
 --
 queryStakeDistributionFromLocalState
   :: LocalNodeConnectInfo mode block
-  -> ExceptT LocalStateQueryError IO (Ledger.PoolDistr TPraosStandardCrypto)
+  -> ExceptT LocalStateQueryError IO (PoolDistr TPraosStandardCrypto)
 queryStakeDistributionFromLocalState LocalNodeConnectInfo{
                                        localNodeConsensusMode = ByronMode{}
                                      } =

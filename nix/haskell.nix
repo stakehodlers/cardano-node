@@ -6,11 +6,10 @@
 , stdenv
 , haskell-nix
 , buildPackages
-, config ? {}
 # GHC attribute name
-, compiler ? config.haskellNix.compiler or "ghc865"
+, compiler
 # Enable profiling
-, profiling ? config.haskellNix.profiling or false
+, profiling ? false
 # Enable asserts for given packages
 , assertedPackages ? []
 # Version info, to be passed when not building from a git work tree
@@ -39,12 +38,6 @@ let
   } // {
     inherit src;
     compiler-nix-name = compiler;
-    #ghc = buildPackages.haskell-nix.compiler.${compiler};
-    pkg-def-extras = lib.optional stdenv.hostPlatform.isLinux (hackage: {
-      packages = {
-        "systemd" = (((hackage.systemd)."2.2.0").revisions).default;
-      };
-    });
     modules = [
       { compiler.nix-name = compiler; }
       # Allow reinstallation of Win32
@@ -71,10 +64,14 @@ let
         # 2. then drop windows for the test
         packages.cardano-cli.components.tests.cardano-cli-test.platforms =
           with stdenv.lib.platforms; lib.mkForce [ linux darwin ];
+        packages.cardano-cli.components.tests.cardano-cli-golden.platforms =
+          with stdenv.lib.platforms; lib.mkForce [ linux darwin ];
 
         # Needed for the CLI tests.
         # Coreutils because we need 'paste'.
         packages.cardano-cli.components.tests.cardano-cli-test.build-tools =
+          lib.mkForce [buildPackages.jq buildPackages.coreutils buildPackages.shellcheck];
+        packages.cardano-cli.components.tests.cardano-cli-golden.build-tools =
           lib.mkForce [buildPackages.jq buildPackages.coreutils buildPackages.shellcheck];
       }
       {
@@ -102,6 +99,13 @@ let
 
         # cardano-cli-test depends on cardano-cli
         packages.cardano-cli.preCheck = "export CARDANO_CLI=${pkgSet.cardano-cli.components.exes.cardano-cli}/bin/cardano-cli";
+
+        # cardano-node-test depends on cardano-node
+        packages.cardano-node-chairman.preCheck = "
+          export CARDANO_CLI=${pkgSet.cardano-cli.components.exes.cardano-cli}/bin/cardano-cli
+          export CARDANO_NODE=${pkgSet.cardano-node.components.exes.cardano-node}/bin/cardano-node
+          export CARDANO_NODE_SRC=${ ./.. }
+        ";
       }
       {
         packages = lib.genAttrs projectPackages

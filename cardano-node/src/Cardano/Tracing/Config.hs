@@ -1,5 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Cardano.Tracing.Config
@@ -45,9 +43,10 @@ data TraceSelection
   , traceDnsSubscription :: !Bool
   , traceErrorPolicy :: !Bool
   , traceForge :: !Bool
-  , traceForgeState :: !Bool
+  , traceForgeStateInfo :: !Bool
   , traceHandshake :: !Bool
   , traceIpSubscription :: !Bool
+  , traceKeepAliveClient :: !Bool
   , traceLocalChainSyncProtocol :: !Bool
   , traceLocalErrorPolicy :: !Bool
   , traceLocalHandshake :: !Bool
@@ -83,9 +82,10 @@ traceConfigParser v =
     <*> v .:? "TraceDNSSubscription" .!= True
     <*> v .:? "TraceErrorPolicy" .!= True
     <*> v .:? "TraceForge" .!= True
-    <*> v .:? "TraceForgeState" .!= True
+    <*> v .:? "TraceForgeStateInfo" .!= True
     <*> v .:? "TraceHandshake" .!= False
     <*> v .:? "TraceIpSubscription" .!= True
+    <*> v .:? "TraceKeepAliveClient" .!= False
     <*> v .:? "TraceLocalChainSyncProtocol" .!= False
     <*> v .:? "TraceLocalErrorPolicy" .!= True
     <*> v .:? "TraceLocalHandshake" .!= False

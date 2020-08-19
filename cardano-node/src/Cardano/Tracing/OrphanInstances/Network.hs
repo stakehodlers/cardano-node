@@ -19,17 +19,19 @@ import           Data.Text (pack)
 import           Network.Mux (MuxTrace (..), WithMuxBearer (..))
 import qualified Network.Socket as Socket (SockAddr)
 
+import           Cardano.Tracing.ConvertTxId (ConvertTxId)
 import           Cardano.Tracing.OrphanInstances.Common
 import           Cardano.Tracing.Render
 
 import           Ouroboros.Consensus.Block (ConvertRawHash (..), getHeader)
-import           Ouroboros.Consensus.Ledger.SupportsMempool (GenTx, HasTxs (..), TxId, txId)
+import           Ouroboros.Consensus.Ledger.SupportsMempool (GenTx, HasTxs (..), txId)
 import           Ouroboros.Consensus.Node.Run (RunNode (..))
 import           Ouroboros.Network.Block
 import           Ouroboros.Network.BlockFetch.ClientState (TraceFetchClientState (..),
                      TraceLabelPeer (..))
 import           Ouroboros.Network.BlockFetch.Decision (FetchDecision, FetchDecline (..))
 import           Ouroboros.Network.Codec (AnyMessage (..))
+import           Ouroboros.Network.KeepAlive (TraceKeepAliveClient)
 import qualified Ouroboros.Network.NodeToClient as NtC
 import           Ouroboros.Network.NodeToNode (ErrorPolicyTrace (..), TraceSendRecv (..),
                      WithAddr (..))
@@ -48,10 +50,6 @@ import           Ouroboros.Network.Subscription (ConnectResult (..), DnsTrace (.
                      WithIPList (..))
 import           Ouroboros.Network.TxSubmission.Inbound (TraceTxSubmissionInbound (..))
 import           Ouroboros.Network.TxSubmission.Outbound (TraceTxSubmissionOutbound (..))
-
--- We do need some consensus imports to provide useful trace messages for some
--- network protocols
-import           Ouroboros.Consensus.Util.Condense (Condense, condense)
 
 
 --
@@ -119,6 +117,11 @@ instance HasSeverityAnnotation (TraceTxSubmissionInbound txid tx) where
 
 instance HasPrivacyAnnotation (TraceTxSubmissionOutbound txid tx)
 instance HasSeverityAnnotation (TraceTxSubmissionOutbound txid tx) where
+  getSeverityAnnotation _ = Info
+
+
+instance HasPrivacyAnnotation (TraceKeepAliveClient remotePeer)
+instance HasSeverityAnnotation (TraceKeepAliveClient remotePeer) where
   getSeverityAnnotation _ = Info
 
 
@@ -326,6 +329,12 @@ instance HasTextFormatter (TraceTxSubmissionOutbound txid tx) where
   formatText _ = pack . show . toList
 
 
+instance Show remotePeer => Transformable Text IO (TraceKeepAliveClient remotePeer) where
+  trTransformer = trStructuredText
+instance HasTextFormatter (TraceKeepAliveClient peer) where
+  formatText _ = pack . show . toList
+
+
 instance Show addr => Transformable Text IO (WithAddr addr ErrorPolicyTrace) where
   trTransformer = trStructuredText
 instance HasTextFormatter (WithAddr addr ErrorPolicyTrace) where
@@ -365,7 +374,7 @@ instance (Show peer)
 --
 -- NOTE: this list is sorted by the unqualified name of the outermost type.
 
-instance ( Condense (TxId (GenTx blk))
+instance ( ConvertTxId blk
          , RunNode blk
          , HasTxs blk
          )
@@ -378,7 +387,7 @@ instance ( Condense (TxId (GenTx blk))
              ]
       where
         presentTx :: GenTx blk -> Value
-        presentTx =  String . pack . condense . txId
+        presentTx =  String . renderTxIdForVerbosity MaximalVerbosity . txId
 
   toObject _v (AnyMessage (MsgBlock blk)) =
     mkObject [ "kind" .= String "MsgBlock"
@@ -589,6 +598,15 @@ instance (Show txid, Show tx)
     mkObject
       [ "kind" .= String "TraceTxSubmissionOutboundSendMsgReplyTxs"
       ]
+
+
+instance Show remotePeer => ToObject (TraceKeepAliveClient remotePeer) where
+  toObject _verb ev =
+    mkObject
+      [ "kind" .= String "TraceKeepAliveClient"
+      , "event" .= show ev
+      ]
+
 
 instance Show addr => ToObject (WithAddr addr ErrorPolicyTrace) where
   toObject _verb (WithAddr addr ev) =
